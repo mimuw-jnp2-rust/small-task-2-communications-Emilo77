@@ -1,415 +1,205 @@
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use crate::CommsError::{ConnectionClosed, ConnectionExists, ConnectionNotFound, ServerLimitReached, UnexpectedHandshake};
-use crate::Connection::{Closed, Open};
-use crate::MessageType::Handshake;
+use std::fmt::{Display, Formatter};
+use std::io::stdin;
 
-type CommsResult<T> = Result<T, CommsError>;
-
-#[derive(Debug, PartialEq, Eq)]
-enum CommsError {
-    ServerLimitReached(String),
-    UnexpectedHandshake(String),
-    ConnectionExists(String),
-    ConnectionClosed(String),
-    ConnectionNotFound(String),
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum Dish {
+    ThaiChicken,
+    Tofu,
+    FriedRice,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-enum MessageType {
-    Handshake,
-    Post,
-    GetCount,
-}
-
-impl MessageType {
-    fn header(&self) -> &'static str {
+impl Dish {
+    fn price(&self) -> u32 {
         match self {
-            MessageType::Handshake => "[HANDSHAKE]",
-            MessageType::Post => "[POST]",
-            MessageType::GetCount => "[GET COUNT]"
+            Dish::ThaiChicken => 20,
+            Dish::Tofu => 15,
+            Dish::FriedRice => 12,
         }
     }
 }
 
-// There are three types of messages with the following specifications:
-//
-//      * Handshake - greets the new server and establishes the connection.
-//                    The `load` field should be set to the ip of the client
-//                    so that it can be saved by the server.
-//
-//      * Post      - sends whatever load to be consumed by the server.
-//                    Contributes to the server's limit of received requests.
-//
-//      * GetCount  - Asks the server about the current number of received
-//                    POST requests.
-struct Message {
-    msg_type: MessageType,
-    load: String,
+const TAKEAWAY_FEE: u32 = 1;
+
+#[derive(Debug, Clone)]
+struct Order {
+    dishes: Vec<Dish>,
+    takeaway: bool,
 }
 
-impl Message {
-    fn content(&self) -> String {
-        format!("{}\n{}", self.msg_type.header(), self.load)
-    }
-}
-
-enum Connection {
-    Closed,
-    Open(Server),
-}
-
-struct Client {
-    ip: String,
-    connections: HashMap<String, Connection>,
-}
-
-impl Client {
-    fn new(ip: String) -> Client {
-        Client {
-            ip,
-            connections: HashMap::new(),
+impl Order {
+    fn new() -> Order {
+        Order {
+            dishes: vec![],
+            takeaway: false,
         }
     }
 
-    // Attempts opening a new connection to the given address.
-    // Method should return an error when a connection already exists.
-    // The client should send a handshake to the server.
-    fn open(&mut self, addr: &str, server: Server) -> CommsResult<()> {
-        if self.is_open(addr) {
-            return CommsResult::Err(ConnectionExists(String::from(addr)));
-        }
-        let new_message = Message {
-            msg_type: MessageType::Handshake,
-            load: String::from(self.ip.clone()),
-        };
-        self.connections.insert(String::from(addr), Connection::Open(server));
-        self.send(addr, new_message);
-
-        CommsResult::Ok(())
+    fn add_dish(&mut self, dish: Dish) {
+        self.dishes.push(dish);
     }
 
-    // Sends the provided message to the server at the given `addr`.
-    // Can only send messages through open connections. If the server
-    // responds with a ServerLimitReached error, its corresponding connection
-    // should be closed.
-    fn send(&mut self, addr: &str, msg: Message) -> CommsResult<Response> {
-        match self.connections.get_mut(addr) {
-            None => Err(ConnectionNotFound(String::from(addr))),
-            Some(connection) => match connection {
-                Closed => Err(ConnectionClosed(String::from(addr))),
-                Open(server) => match server.receive(msg) {
-                    Err(CommsError::ServerLimitReached(server_name)) => {
-                        *connection = Connection::Closed;
-                        Err(CommsError::ServerLimitReached(server_name))
-                    }
-                    other => other,
-                }
+    fn set_takeaway(&mut self) {
+        self.takeaway = true;
+    }
+
+    fn dish_count(&self, dish: Dish) -> u32 {
+        let mut count = 0;
+        for i in self.dishes.iter() {
+            if i.eq(&dish) {
+                count += 1;
             }
         }
+        count
     }
 
+    fn items_count(&self) -> u32 {
+        self.dishes.len() as u32
+    }
 
-    // Returns whether the connection to `addr` exists and has
-// the `Open` status.
-    #[allow(dead_code)]
-    fn is_open(&self, addr: &str) -> bool {
-        if self.connections.contains_key(addr) {
-            match self.connections.get(addr) {
-                Some(Closed) => { false }
-                Some(Open(..)) => { true }
-                _ => { false }
+    fn is_takeaway(&self) -> bool {
+        self.takeaway
+    }
+
+    fn total(&self) -> u32 {
+        let mut sum = 0;
+        for dish in self.dishes.iter() {
+            sum += dish.price();
+        }
+
+        if self.is_takeaway() {
+            sum + self.items_count() * TAKEAWAY_FEE
+        } else {
+            sum
+        }
+    }
+}
+
+impl Display for Order {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "chicken: {}, tofu: {}, rice: {}, takeaway: {}",
+            self.dish_count(Dish::ThaiChicken),
+            self.dish_count(Dish::Tofu),
+            self.dish_count(Dish::FriedRice),
+            self.is_takeaway()
+        )
+    }
+}
+
+struct Customer {
+    name: String,
+    favorite_order: Order,
+}
+
+struct VanBinh {
+    orders_count: u32,
+    customers: Vec<Customer>,
+}
+
+impl VanBinh {
+    pub fn new() -> VanBinh {
+        VanBinh {
+            orders_count: 1,
+            customers: vec![],
+        }
+    }
+
+    fn add_customer(&mut self, name: String, favorite_order: Order) {
+        self.customers.push(Customer {
+            name,
+            favorite_order,
+        })
+    }
+
+    fn get_saved_customer(&self, name: &str) -> Option<&Customer> {
+        self.customers.iter().find(|c| c.name == name)
+    }
+
+    fn increase_orders_count(&mut self) {
+        self.orders_count += 1;
+    }
+
+    fn get_orders_count(&self) -> u32 {
+        self.orders_count
+    }
+}
+
+fn get_line() -> String {
+    let mut line = String::new();
+    stdin().read_line(&mut line).unwrap();
+    line.trim().to_string()
+}
+
+fn yes_no(question: &str) -> bool {
+    println!("{} (y/n)", question);
+    get_line() == "y"
+}
+
+fn get_order() -> Order {
+    let mut order = Order::new();
+    loop {
+        println!("Enter dish name or empty line to finish:");
+        let line = get_line();
+        if line.is_empty() {
+            break;
+        }
+        if line.contains("chicken") {
+            order.add_dish(Dish::ThaiChicken);
+        } else if line.contains("tofu") {
+            order.add_dish(Dish::Tofu);
+        } else if line.contains("rice") {
+            order.add_dish(Dish::FriedRice);
+        } else {
+            println!("Unknown dish name: {}", line);
+        }
+    }
+
+    if yes_no("Takeaway?") {
+        order.set_takeaway();
+    }
+
+    order
+}
+
+fn main() {
+    let mut van_binh = VanBinh::new();
+
+    loop {
+        println!("Hi! Welcome to Van Binh! What's your name?");
+        let name = get_line();
+
+        if name.is_empty() {
+            break;
+        }
+
+        let order = if let Some(customer) = van_binh.get_saved_customer(&name) {
+            println!("Welcome back, {}!", customer.name);
+            if yes_no("Same as usual?") {
+                customer.favorite_order.clone()
+            } else {
+                get_order()
             }
         } else {
-            false
-        }
-    }
-
-    // Returns the number of closed connections
-    #[allow(dead_code)]
-    fn count_closed(&self) -> usize {
-        self.connections.iter().map(|(k, _)| k).filter(|k| !self.is_open(k)).count()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Response {
-    HandshakeReceived,
-    PostReceived,
-    GetCount(u32),
-}
-
-
-#[derive(Clone)]
-struct Server {
-    name: String,
-    post_count: u32,
-    limit: u32,
-    connected_client: Option<String>,
-}
-
-impl Server {
-    fn new(name: String, limit: u32) -> Server {
-        Server {
-            name,
-            post_count: 0,
-            limit,
-            connected_client: None,
-        }
-    }
-
-    // Consumes the message.
-    // Server should report a ServerLimitReached error when it has received
-    // a POST request above its limit..
-    // Upon receiving a GET request, the server should respond
-    // with the GetCount response containing the number of received POST requests.
-    fn receive(&mut self, msg: Message) -> CommsResult<Response> {
-        eprintln!("{} received:\n{}", self.name, msg.content());
-
-        match msg.msg_type {
-            MessageType::Handshake => {
-                if matches!(self.connected_client, None) {
-                    self.connected_client = Some(msg.load);
-                    CommsResult::Ok(Response::HandshakeReceived)
-                } else {
-                    Err(UnexpectedHandshake(String::from(self.name.clone())))
-                }
+            println!("Welcome, {}!", name);
+            let order = get_order();
+            if yes_no("Would you like to save this order?") {
+                van_binh.add_customer(name, order.clone());
             }
-            MessageType::Post => {
-                if self.limit == self.post_count {
-                    CommsResult::Err(ServerLimitReached(String::from(self.name.clone())))
-                } else {
-                    self.post_count += 1;
-                    CommsResult::Ok(Response::PostReceived)
-                }
-            }
-            MessageType::GetCount => {
-                Ok(Response::GetCount(self.post_count))
-            }
+            order
+        };
+
+        if order.dishes.is_empty() {
+            println!("Your order is empty!");
+        } else {
+            println!("This is order no. {}", van_binh.get_orders_count());
+            println!(
+                "There you go: {}, it's going to be {} zł",
+                order,
+                order.total()
+            );
+            van_binh.increase_orders_count();
         }
     }
-}
-
-fn main() -> CommsResult<()> {
-    let mut client = Client::new(String::from("10.0.0.1"));
-
-    client.open("197.0.0.1", Server::new(String::from("TestServer"), 2))?;
-    client.send(
-        "197.0.0.1",
-        Message {
-            msg_type: MessageType::Post,
-            load: String::from("Hello from the other side!"),
-        },
-    )?;
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_headers() {
-        assert_eq!(MessageType::Handshake.header(), "[HANDSHAKE]");
-        assert_eq!(MessageType::Post.header(), "[POST]");
-        assert_eq!(MessageType::GetCount.header(), "[GET COUNT]");
-    }
-
-    #[test]
-    fn test_server_receive() -> CommsResult<()> {
-        let mut server = Server::new(String::from("TestServer"), 1);
-        assert_eq!(server.connected_client, None);
-
-        // handshake
-        let response = server.receive(Message {
-            msg_type: MessageType::Handshake,
-            load: String::from("localhost"),
-        })?;
-        assert_eq!(response, Response::HandshakeReceived);
-        assert_eq!(server.post_count, 0);
-        assert_eq!(server.connected_client, Some(String::from("localhost")));
-
-        // another handshake should be rejected
-        let result = server.receive(Message {
-            msg_type: MessageType::Handshake,
-            load: String::from("localhost"),
-        });
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::UnexpectedHandshake(String::from("TestServer"))
-        );
-
-        // GET
-        let response = server.receive(Message {
-            msg_type: MessageType::GetCount,
-            load: String::new(),
-        })?;
-        assert_eq!(response, Response::GetCount(0));
-        assert_eq!(server.post_count, 0);
-
-        // POST
-        let response = server.receive(Message {
-            msg_type: MessageType::Post,
-            load: String::from("The tale begins..."),
-        })?;
-        assert_eq!(response, Response::PostReceived);
-        assert_eq!(server.post_count, 1);
-
-        // another POST should cause a server error
-        let result = server.receive(Message {
-            msg_type: MessageType::Post,
-            load: String::from("...and quickly ends."),
-        });
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::ServerLimitReached(String::from("TestServer"))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_client_open() -> CommsResult<()> {
-        let mut client = Client::new(String::from("localhost"));
-
-        assert!(client
-            .open("197.0.0.1", Server::new(String::from("TestServer"), 2))
-            .is_ok());
-        assert!(client.is_open("197.0.0.1"));
-
-        let conn = client.connections.get("197.0.0.1").unwrap();
-        match conn {
-            &Connection::Open(ref server) => {
-                assert_eq!(server.connected_client, Some("localhost".to_string()))
-            }
-            _ => panic!(),
-        }
-
-        // opening an already open connection should give an error
-        let result = client.open("197.0.0.1", Server::new(String::from("TestServer2"), 100));
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::ConnectionExists(String::from("197.0.0.1"))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_client_send() -> CommsResult<()> {
-        let mut client = Client::new(String::from("localhost"));
-
-        client.open("197.0.0.1", Server::new(String::from("TestServer"), 1))?;
-
-        let response = client.send(
-            "197.0.0.1",
-            Message {
-                msg_type: MessageType::GetCount,
-                load: String::new(),
-            },
-        )?;
-        assert_eq!(response, Response::GetCount(0));
-
-        let response = client.send(
-            "197.0.0.1",
-            Message {
-                msg_type: MessageType::Post,
-                load: String::from("Another tale"),
-            },
-        )?;
-        assert_eq!(response, Response::PostReceived);
-
-        // Server should have reached its limit. Another POST should halt the connection and give an error.
-        let result = client.send(
-            "197.0.0.1",
-            Message {
-                msg_type: MessageType::Post,
-                load: String::from("Another abrupt end"),
-            },
-        );
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::ServerLimitReached(String::from("TestServer"))
-        );
-
-        // The connection to the server should have been closed
-        assert!(!client.is_open("197.0.0.1"));
-
-        // No more messages can be sent through a halted connection.
-        let result = client.send(
-            "197.0.0.1",
-            Message {
-                msg_type: MessageType::Post,
-                load: String::from("Maybe this time?"),
-            },
-        );
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::ConnectionClosed(String::from("197.0.0.1"))
-        );
-
-        // Sending through a nonexistent connection should give an error
-        let result = client.send(
-            "10.0.0.1",
-            Message {
-                msg_type: MessageType::Post,
-                load: String::new(),
-            },
-        );
-        let error_msg = result.unwrap_err();
-        assert_eq!(
-            error_msg,
-            CommsError::ConnectionNotFound(String::from("10.0.0.1"))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_client_count_closed() -> CommsResult<()> {
-        let to_open = [
-            "197.0.0.1",
-            "197.0.0.2",
-            "197.0.0.3",
-            "197.0.0.4",
-            "197.0.0.5",
-        ];
-        let to_halt = ["197.0.0.1", "197.0.0.3"];
-
-        let mut client = Client::new(String::from("localhost"));
-
-        to_open
-            .iter()
-            .for_each(|&addr| client.open(addr, Server::new(addr.to_string(), 1)).unwrap());
-
-        for addr in to_halt {
-            client.send(
-                addr,
-                Message {
-                    msg_type: MessageType::Post,
-                    load: String::from("Push the limit"),
-                },
-            )?;
-            client
-                .send(
-                    addr,
-                    Message {
-                        msg_type: MessageType::Post,
-                        load: String::from("Too much"),
-                    },
-                )
-                .expect_err("Connection should close now");
-        }
-
-        assert_eq!(client.count_closed(), 2);
-
-        Ok(())
-    }
+    println!("Bye!");
 }
