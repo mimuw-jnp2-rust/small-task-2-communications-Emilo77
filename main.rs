@@ -1,7 +1,9 @@
+#[warn(unused_imports)]
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use crate::CommsError::{ConnectionClosed, ConnectionExists, ConnectionNotFound, ServerLimitReached, UnexpectedHandshake};
 use crate::Connection::{Closed, Open};
+#[warn(unused_imports)]
 use crate::MessageType::Handshake;
 
 type CommsResult<T> = Result<T, CommsError>;
@@ -82,10 +84,10 @@ impl Client {
         }
         let new_message = Message {
             msg_type: MessageType::Handshake,
-            load: String::from(self.ip.clone()),
+            load: self.ip.clone(),
         };
         self.connections.insert(String::from(addr), Connection::Open(server));
-        self.send(addr, new_message);
+        self.send(addr, new_message)?;
 
         CommsResult::Ok(())
     }
@@ -173,12 +175,12 @@ impl Server {
                     self.connected_client = Some(msg.load);
                     CommsResult::Ok(Response::HandshakeReceived)
                 } else {
-                    Err(UnexpectedHandshake(String::from(self.name.clone())))
+                    Err(UnexpectedHandshake(self.name.clone()))
                 }
             }
             MessageType::Post => {
                 if self.limit == self.post_count {
-                    CommsResult::Err(ServerLimitReached(String::from(self.name.clone())))
+                    CommsResult::Err(ServerLimitReached(self.name.clone()))
                 } else {
                     self.post_count += 1;
                     CommsResult::Ok(Response::PostReceived)
